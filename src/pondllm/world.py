@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -31,6 +32,8 @@ class WorldConfig:
     max_population: int = 48
     memory_limit: int = 12
     perception_radius: int = 3
+    signal_delivery: str = "normal"
+    signal_cost: int = 0
 
     def validate(self) -> None:
         if self.width < 3 or self.height < 3:
@@ -41,6 +44,10 @@ class WorldConfig:
             raise ValueError("max_population must be at least founders")
         if self.reproduction_cost < self.child_energy:
             raise ValueError("reproduction_cost must cover child_energy")
+        if self.signal_delivery not in {"normal", "blocked", "corrupted"}:
+            raise ValueError("signal_delivery must be normal, blocked, or corrupted")
+        if self.signal_cost < 0:
+            raise ValueError("signal_cost must be non-negative")
 
 
 class World:
@@ -73,13 +80,16 @@ class World:
         lineage_id: str,
         energy: int | None = None,
         genes: Genes | None = None,
+        organism_id: str | None = None,
     ) -> Organism:
         if not self.in_bounds(position):
             raise ValueError("founder position is out of bounds")
         if self.organism_at(position) is not None:
             raise ValueError("founder position is occupied")
+        if organism_id is not None and organism_id in self.organisms:
+            raise ValueError("founder organism id is already in use")
         organism = Organism(
-            organism_id=self._new_organism_id(),
+            organism_id=self._new_organism_id() if organism_id is None else organism_id,
             lineage_id=lineage_id,
             position=position,
             energy=self.config.initial_energy if energy is None else energy,
@@ -249,20 +259,42 @@ class World:
             return True, "shared energy"
 
         if action.kind is ActionKind.SIGNAL:
+            if organism.energy <= self.config.signal_cost:
+                return False, "insufficient energy for signal cost"
+            organism.energy -= self.config.signal_cost
+            delivered_message = action.message or ""
+            if self.config.signal_delivery == "corrupted":
+                delivered_message = _corrupt_food_coordinate(
+                    delivered_message,
+                    width=self.config.width,
+                    height=self.config.height,
+                )
             receivers = []
-            for receiver in self.living():
-                if receiver.organism_id == organism.organism_id:
-                    continue
-                if _manhattan(organism.position, receiver.position) <= self.config.perception_radius:
-                    receiver.remember(
-                        f"{organism.organism_id} signalled: {action.message}",
-                        self.config.memory_limit,
-                    )
-                    receivers.append(receiver.organism_id)
+            if self.config.signal_delivery != "blocked":
+                for receiver in self.living():
+                    if receiver.organism_id == organism.organism_id:
+                        continue
+                    if (
+                        _manhattan(organism.position, receiver.position)
+                        <= self.config.perception_radius
+                    ):
+                        receiver.remember(
+                            f"{organism.organism_id} signalled: {delivered_message}",
+                            self.config.memory_limit,
+                        )
+                        receivers.append(receiver.organism_id)
             self._emit(
                 "signal",
                 organism.organism_id,
-                {"message": action.message, "receivers": receivers},
+                {
+                    "message": action.message,
+                    "delivered_message": (
+                        delivered_message if self.config.signal_delivery != "blocked" else None
+                    ),
+                    "receivers": receivers,
+                    "delivery": self.config.signal_delivery,
+                    "cost": self.config.signal_cost,
+                },
             )
             return True, f"signal reached {len(receivers)} organisms"
 
@@ -332,9 +364,11 @@ class World:
                 handle.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
 
     def _new_organism_id(self) -> str:
-        organism_id = f"organism-{self._next_organism_number:05d}"
-        self._next_organism_number += 1
-        return organism_id
+        while True:
+            organism_id = f"organism-{self._next_organism_number:05d}"
+            self._next_organism_number += 1
+            if organism_id not in self.organisms:
+                return organism_id
 
     def _grow_food(self, requested_units: int) -> None:
         capacity = self.config.max_food - sum(self.food.values())
@@ -351,3 +385,15 @@ class World:
 
 def _manhattan(left: Position, right: Position) -> int:
     return abs(left[0] - right[0]) + abs(left[1] - right[1])
+
+
+_FOOD_COORDINATE = re.compile(r"food at \[\s*(-?\d+)\s*,\s*(-?\d+)\s*\]", re.IGNORECASE)
+
+
+def _corrupt_food_coordinate(message: str, width: int, height: int) -> str:
+    match = _FOOD_COORDINATE.search(message)
+    if match is None:
+        return f"corrupted: {message}"
+    x = (int(match.group(1)) + max(1, width // 2)) % width
+    y = (int(match.group(2)) + max(1, height // 2)) % height
+    return _FOOD_COORDINATE.sub(f"food at [{x},{y}]", message, count=1)

@@ -88,6 +88,24 @@ def build_parser() -> argparse.ArgumentParser:
     run_model.add_argument("--load-in-4bit", action="store_true")
     run_model.add_argument("--output", default="runs/model-smoke")
 
+    communication_world = subparsers.add_parser(
+        "run-communication-world",
+        help="run paired normal, blocked, corrupted, and costly communication worlds",
+    )
+    communication_world.add_argument("--adapter")
+    communication_world.add_argument("--model")
+    communication_world.add_argument("--steps", type=int, default=7)
+    communication_world.add_argument("--scenes", type=int, default=4)
+    communication_world.add_argument("--seed-start", type=int, default=100)
+    communication_world.add_argument(
+        "--profile",
+        choices=("matched", "clean"),
+        default="matched",
+    )
+    communication_world.add_argument("--temperature", type=float, default=0.0)
+    communication_world.add_argument("--load-in-4bit", action="store_true")
+    communication_world.add_argument("--output", default="runs/communication-world")
+
     evaluate = subparsers.add_parser("evaluate", help="measure model action validity on held-out states")
     evaluate.add_argument("--dataset", default="data/generated/eval.jsonl")
     evaluate.add_argument("--adapter")
@@ -233,6 +251,39 @@ def main(argv: list[str] | None = None) -> int:
             summary["adapter"] = str(Path(args.adapter).resolve())
         _write_run(args.output, world, summary)
         print(json.dumps(summary, indent=2))
+        return 0
+
+    if args.command == "run-communication-world":
+        from .communication import run_communication_experiment
+        from .model_policy import QwenPolicy
+
+        policy = QwenPolicy(
+            model_name=args.model or config.training.model,
+            adapter_path=args.adapter,
+            temperature=args.temperature,
+            load_in_4bit=args.load_in_4bit,
+        )
+        model_name = args.model or config.training.model
+        summary = run_communication_experiment(
+            policy=policy,
+            output_dir=args.output,
+            seeds=range(args.seed_start, args.seed_start + args.scenes),
+            steps=args.steps,
+            profile=args.profile,
+            metadata={
+                "policy": "model",
+                "model": model_name,
+                "adapter": str(Path(args.adapter).resolve()) if args.adapter else None,
+                "temperature": args.temperature,
+            },
+        )
+        console_summary = {
+            key: value for key, value in summary.items() if key != "runs"
+        }
+        console_summary["summary_path"] = str(
+            (Path(args.output) / "summary.json").resolve()
+        )
+        print(json.dumps(console_summary, indent=2))
         return 0
 
     if args.command == "evaluate":

@@ -145,12 +145,38 @@ The public V3 adapters are:
 - [Qwen3.5-0.8B-Base communication adapter](https://huggingface.co/Xnizzorg/pondllm-qwen3.5-0.8b-base-communication-sft)
 - [Qwen3.5-2B-Base communication adapter](https://huggingface.co/Xnizzorg/pondllm-qwen3.5-2b-base-communication-sft)
 
+## World-level communication ablation
+
+The fifth experiment put both adapters into paired live worlds with normal, blocked, corrupted,
+and costly signal channels. With training-shaped sender/recipient context, signalling caused food
+acquisition in 3/4 scenes for 0.8B and 4/4 for 2B; blocking delivery reduced both to 0/4.
+
+That behavior did not generalize. With neutral organism and lineage IDs, tick zero, and empty
+memories, neither adapter signalled in any of four scenes. The earlier held-out score measured
+seed generalization inside one generator schema, not robust recognition of information asymmetry.
+The result, caveats, free-world observations, and V4 curriculum are recorded in
+[docs/night-five-world-communication.md](docs/night-five-world-communication.md).
+
+Reproduce a neutral-profile run with:
+
+```powershell
+python -m pondllm run-communication-world `
+  --model Qwen/Qwen3.5-0.8B-Base `
+  --adapter artifacts/qwen3.5-0.8b-base-action-sft-v3-communication `
+  --profile clean `
+  --scenes 4 `
+  --steps 7 `
+  --temperature 0 `
+  --output runs/communication-world-0.8b-clean
+```
+
 ## Repository map
 
 ```text
 configs/night_one.toml       Night-one defaults
 src/pondllm/domain.py        Actions, organisms, genes, and observations
 src/pondllm/world.py         Deterministic ecology and event logging
+src/pondllm/communication.py Paired world-level signal interventions and metrics
 src/pondllm/policies.py      Heuristic and random baselines
 src/pondllm/prompting.py     Shared action and communication protocol
 src/pondllm/model_policy.py  Optional local Qwen policy
