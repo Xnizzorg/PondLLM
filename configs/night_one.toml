@@ -1,0 +1,35 @@
+[world]
+width = 24
+height = 24
+founders = 12
+initial_energy = 10
+initial_food = 55
+food_energy = 4
+food_regrowth = 3
+max_food = 80
+metabolism = 1
+reproduction_cost = 8
+child_energy = 4
+max_population = 48
+memory_limit = 12
+perception_radius = 3
+
+[run]
+seed = 7
+steps = 100
+
+[dataset]
+episodes = 16
+steps_per_episode = 60
+seed = 1000
+
+[training]
+model = "Qwen/Qwen3-0.6B"
+max_length = 1024
+lora_rank = 8
+lora_alpha = 16
+lora_dropout = 0.05
+learning_rate = 0.0002
+epochs = 2.0
+micro_batch_size = 16
+gradient_accumulation_steps = 2
