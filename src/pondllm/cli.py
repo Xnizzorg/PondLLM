@@ -137,6 +137,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("matched", "clean", "v4", "v41"),
         default="matched",
     )
+    communication_world.add_argument(
+        "--policy",
+        choices=("model", "heuristic"),
+        default="model",
+    )
     communication_world.add_argument("--temperature", type=float, default=0.0)
     communication_world.add_argument("--load-in-4bit", action="store_true")
     communication_world.add_argument("--output", default="runs/communication-world")
@@ -326,25 +331,37 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "run-communication-world":
         from .communication import run_communication_experiment
-        from .model_policy import QwenPolicy
-
-        policy = QwenPolicy(
-            model_name=args.model or config.training.model,
-            adapter_path=args.adapter,
-            temperature=args.temperature,
-            load_in_4bit=args.load_in_4bit,
-        )
         model_name = args.model or config.training.model
+        policy = None
+        policy_factory = None
+        if args.policy == "model":
+            from .model_policy import QwenPolicy
+
+            policy = QwenPolicy(
+                model_name=model_name,
+                adapter_path=args.adapter,
+                temperature=args.temperature,
+                load_in_4bit=args.load_in_4bit,
+            )
+        else:
+            policy_factory = (
+                lambda scene_seed, _condition: HeuristicPolicy(scene_seed + 100)
+            )
         summary = run_communication_experiment(
             policy=policy,
+            policy_factory=policy_factory,
             output_dir=args.output,
             seeds=range(args.seed_start, args.seed_start + args.scenes),
             steps=args.steps,
             profile=args.profile,
             metadata={
-                "policy": "model",
-                "model": model_name,
-                "adapter": str(Path(args.adapter).resolve()) if args.adapter else None,
+                "policy": args.policy,
+                "model": model_name if args.policy == "model" else None,
+                "adapter": (
+                    str(Path(args.adapter).resolve())
+                    if args.adapter and args.policy == "model"
+                    else None
+                ),
                 "temperature": args.temperature,
             },
         )

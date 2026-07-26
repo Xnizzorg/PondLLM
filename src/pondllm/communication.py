@@ -5,7 +5,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from random import Random
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from .domain import Action, ActionKind, Event, Genes, Observation, Position
 from .policies import Policy
@@ -234,12 +234,13 @@ def create_communication_world(
 
 
 def run_communication_experiment(
-    policy: Policy,
+    policy: Policy | None,
     output_dir: str | Path,
     seeds: Iterable[int],
     steps: int = 7,
     profile: str = "matched",
     metadata: dict[str, Any] | None = None,
+    policy_factory: Callable[[int, str], Policy] | None = None,
 ) -> dict[str, Any]:
     if steps < 1:
         raise ValueError("steps must be positive")
@@ -250,6 +251,8 @@ def run_communication_experiment(
         raise ValueError("communication experiment seeds must be unique")
     if profile not in COMMUNICATION_PROFILES:
         raise ValueError(f"unknown communication profile: {profile}")
+    if (policy is None) == (policy_factory is None):
+        raise ValueError("provide exactly one of policy or policy_factory")
 
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
@@ -264,9 +267,16 @@ def run_communication_experiment(
             elif scene_payload != expected_scene:
                 raise RuntimeError("paired communication worlds do not share an initial scene")
 
+            delegate = (
+                policy_factory(seed, condition)
+                if policy_factory is not None
+                else policy
+            )
+            if delegate is None:
+                raise RuntimeError("communication policy was not constructed")
             world.run(
                 _PairedCommunicationPolicy(
-                    delegate=policy,
+                    delegate=delegate,
                     sender_id=scene.sender_id,
                     sender_action_tick=scene.initial_tick,
                     forced_rest_ids=scene.distractor_ids,

@@ -200,6 +200,41 @@ python -m pondllm dataset-v4 `
   --output data/generated/sft-v4-simulator-native.jsonl
 ```
 
+## Rich-context and reachability V4.1
+
+The seventh experiment trains a fresh 0.8B adapter on four-agent/two-food information asymmetry,
+reachability-aware movement, safe rescue sharing, and rescued versus unrescued child behavior.
+
+V4.1 makes two large controlled gains over V4: useful signalling in the rich held-out suite rises
+from 0% to 75.5%, and reachability/rescue exact accuracy rises from 57.33% to 98.29%. In 16 rich
+paired worlds, blocking signal delivery removes a +56.25-point normal-channel forage advantage.
+The adapter retains 100% strict JSON and legal actions plus V4's simpler communication and survival
+behavior.
+
+It is not ready for population RL. Redundant rich-context signalling is 18%, above the 10% gate,
+and three energy-one organisms still move to their deaths in ordinary fixed-seed worlds. The full
+corpus design, audits, baselines, hashes, per-case results, limitations, and V4.2 recommendations
+are in [docs/night-seven-v4.1-results.md](docs/night-seven-v4.1-results.md).
+The evaluated adapter is published at
+[Xnizzorg/pondllm-qwen3.5-0.8b-base-v4-1-rich-reachability](https://huggingface.co/Xnizzorg/pondllm-qwen3.5-0.8b-base-v4-1-rich-reachability).
+
+Generate and audit the V4.1 corpus with:
+
+```powershell
+python -m pondllm dataset-v41 `
+  --base data/generated/sft-v4-simulator-native.jsonl `
+  --rich-scenes 1000 `
+  --reachability-scenes 1000 `
+  --seed 61000 `
+  --output data/generated/sft-v4.1-rich-reachability.jsonl
+
+python -m pondllm audit-v41 `
+  --training data/generated/sft-v4.1-rich-reachability.jsonl `
+  --held-out data/generated/eval-v4.1-rich-communication.jsonl `
+             data/generated/eval-v4.1-reachability.jsonl `
+  --output runs/v4.1/corpus-audit.json
+```
+
 ## Repository map
 
 ```text
@@ -208,6 +243,7 @@ src/pondllm/domain.py        Actions, organisms, genes, and observations
 src/pondllm/world.py         Deterministic ecology and event logging
 src/pondllm/communication.py Paired world-level signal interventions and metrics
 src/pondllm/curriculum_v4.py Role-neutral communication and survival curriculum
+src/pondllm/curriculum_v41.py Rich-context communication and reachability curriculum
 src/pondllm/policies.py      Heuristic and random baselines
 src/pondllm/prompting.py     Shared action and communication protocol
 src/pondllm/model_policy.py  Optional local Qwen policy

@@ -191,6 +191,33 @@ class CommunicationWorldTests(unittest.TestCase):
             self.assertGreater(costly["total_signal_energy_spent"], 0)
             self.assertGreater(summary["paired_effects"]["normal_distance_advantage"], 0)
 
+    def test_policy_factory_isolates_each_paired_condition(self) -> None:
+        calls: list[tuple[int, str]] = []
+
+        def factory(seed: int, condition: str) -> ScriptedCommunicationPolicy:
+            calls.append((seed, condition))
+            return ScriptedCommunicationPolicy()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            summary = run_communication_experiment(
+                policy=None,
+                policy_factory=factory,
+                output_dir=Path(temporary),
+                seeds=[100],
+                steps=7,
+            )
+
+        self.assertEqual(
+            calls,
+            [(100, condition) for condition in COMMUNICATION_CONDITIONS],
+        )
+        self.assertTrue(
+            all(
+                summary["per_condition"][condition]["sender_signalled_rate"] == 1.0
+                for condition in COMMUNICATION_CONDITIONS
+            )
+        )
+
     def test_scripted_policy_proves_diverse_v4_channel_effect(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             summary = run_communication_experiment(
