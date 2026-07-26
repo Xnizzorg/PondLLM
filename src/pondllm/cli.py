@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import load_config
+from .curriculum_v4 import generate_v4_sft_dataset
 from .dataset import (
     generate_balanced_sft_dataset,
     generate_communication_sft_dataset,
@@ -68,6 +69,17 @@ def build_parser() -> argparse.ArgumentParser:
     communication.add_argument("--seed", type=int, default=3000)
     communication.add_argument("--output", default="data/generated/sft-v3-communication.jsonl")
 
+    v4 = subparsers.add_parser(
+        "dataset-v4",
+        help="generate neutral simulator-native communication and survival SFT records",
+    )
+    v4.add_argument("--base")
+    v4.add_argument("--scenes", type=int, default=1000)
+    v4.add_argument("--survival-scenes", type=int, default=1000)
+    v4.add_argument("--seed", type=int, default=52000)
+    v4.add_argument("--no-trajectories", action="store_true")
+    v4.add_argument("--output", default="data/generated/sft-v4-simulator-native.jsonl")
+
     train = subparsers.add_parser("train", help="QLoRA fine-tune the action-policy adapter")
     train.add_argument("--dataset", default="data/generated/sft.jsonl")
     train.add_argument("--output", default="artifacts/qwen3-0.6b-action-sft")
@@ -99,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     communication_world.add_argument("--seed-start", type=int, default=100)
     communication_world.add_argument(
         "--profile",
-        choices=("matched", "clean"),
+        choices=("matched", "clean", "v4"),
         default="matched",
     )
     communication_world.add_argument("--temperature", type=float, default=0.0)
@@ -201,6 +213,19 @@ def main(argv: list[str] | None = None) -> int:
             world_config=config.world,
             scenes=args.scenes,
             seed=args.seed,
+        )
+        print(json.dumps(summary, indent=2))
+        return 0
+
+    if args.command == "dataset-v4":
+        summary = generate_v4_sft_dataset(
+            output_path=args.output,
+            base_dataset_path=args.base,
+            world_config=config.world,
+            scenes=args.scenes,
+            survival_scenes=args.survival_scenes,
+            seed=args.seed,
+            include_trajectories=not args.no_trajectories,
         )
         print(json.dumps(summary, indent=2))
         return 0

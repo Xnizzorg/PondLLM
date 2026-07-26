@@ -9,6 +9,7 @@ from pondllm.dataset import (
     generate_sft_dataset,
     stratify_sft_dataset,
 )
+from pondllm.curriculum_v4 import generate_v4_sft_dataset
 from pondllm.domain import Action, ActionKind
 from pondllm.prompting import training_record
 from pondllm.world import WorldConfig
@@ -153,6 +154,71 @@ class DatasetTests(unittest.TestCase):
             for record in records:
                 by_pair.setdefault(record["pair_id"], []).append(record)
             self.assertTrue(all(len(pair) == 2 for pair in by_pair.values()))
+
+    def test_v4_dataset_uses_neutral_simulator_observations(self) -> None:
+        config = WorldConfig(
+            width=12,
+            height=12,
+            founders=2,
+            initial_food=0,
+            food_regrowth=0,
+            max_food=10,
+            max_population=4,
+            perception_radius=3,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / "v4-first.jsonl"
+            second = Path(directory) / "v4-second.jsonl"
+            first_summary = generate_v4_sft_dataset(
+                first,
+                config,
+                scenes=8,
+                survival_scenes=2,
+                seed=53,
+            )
+            second_summary = generate_v4_sft_dataset(
+                second,
+                config,
+                scenes=8,
+                survival_scenes=2,
+                seed=53,
+            )
+            self.assertEqual(first.read_bytes(), second.read_bytes())
+            self.assertEqual(first_summary["sha256"], second_summary["sha256"])
+            records = [
+                json.loads(line)
+                for line in first.read_text(encoding="utf-8").splitlines()
+            ]
+            communication = [
+                record for record in records if "communication_case" in record
+            ]
+            observations = [
+                json.loads(record["prompt"][1]["content"])
+                for record in communication
+            ]
+            self.assertTrue(observations)
+            self.assertFalse(
+                any(
+                    "-s" in observation["self"]["id"]
+                    or "-r" in observation["self"]["id"]
+                    or "-s" in observation["self"]["lineage"]
+                    or "-r" in observation["self"]["lineage"]
+                    for observation in observations
+                )
+            )
+            self.assertFalse(
+                any(
+                    "last forage was" in item or "survived tick" in item
+                    for observation in observations
+                    for item in observation["memory"]
+                )
+            )
+            self.assertTrue(
+                all(
+                    observation["self"]["age"] <= observation["tick"]
+                    for observation in observations
+                )
+            )
 
 
 if __name__ == "__main__":

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
+import subprocess
 from importlib import metadata
 from pathlib import Path
 
 from .config import TrainingConfig
+from .prompting import SYSTEM_PROMPT
 
 
 def train_qlora_sft(
@@ -59,6 +62,9 @@ def train_qlora_sft(
         device_map={"": 0},
         dtype=torch.bfloat16,
     )
+    base_model_revision = getattr(model.config, "_commit_hash", None) or _cached_model_revision(
+        config.model
+    )
     model.config.use_cache = False
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
 
@@ -96,7 +102,9 @@ def train_qlora_sft(
         "dataset_num_proc": 1,
     }
     accepted = inspect.signature(SFTConfig).parameters
-    training_args = SFTConfig(**{key: value for key, value in requested_args.items() if key in accepted})
+    training_args = SFTConfig(
+        **{key: value for key, value in requested_args.items() if key in accepted}
+    )
 
     _stage("Constructing the SFT trainer")
     trainer_kwargs = {
@@ -117,10 +125,13 @@ def train_qlora_sft(
     _stage(f"Saving the trained adapter to {destination}")
     trainer.save_model(str(destination))
     tokenizer.save_pretrained(str(destination))
+    adapter_file = destination / "adapter_model.safetensors"
 
     manifest = {
         "model": config.model,
+        "model_revision": base_model_revision,
         "dataset": str(source.resolve()),
+        "dataset_sha256": _sha256(source),
         "dataset_records": len(dataset),
         "train_records": len(split["train"]),
         "eval_records": len(split["test"]),
@@ -136,6 +147,12 @@ def train_qlora_sft(
             "gradient_accumulation_steps": config.gradient_accumulation_steps,
         },
         "versions": _package_versions(),
+        "git_commit": _git_commit(),
+        "git_dirty": _git_dirty(),
+        "system_prompt_sha256": hashlib.sha256(
+            SYSTEM_PROMPT.encode("utf-8")
+        ).hexdigest().upper(),
+        "adapter_sha256": _sha256(adapter_file) if adapter_file.is_file() else None,
         "metrics": result.metrics,
     }
     with (destination / "run_manifest.json").open("w", encoding="utf-8") as handle:
@@ -152,6 +169,54 @@ def _package_versions() -> dict[str, str]:
         except metadata.PackageNotFoundError:
             versions[package] = "missing"
     return versions
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest().upper()
+
+
+def _git_commit() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return result.stdout.strip() or None
+
+
+def _git_dirty() -> bool | None:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return bool(result.stdout.strip())
+
+
+def _cached_model_revision(model_name: str) -> str | None:
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except ImportError:
+        return None
+    cached_config = try_to_load_from_cache(model_name, "config.json")
+    if not isinstance(cached_config, str):
+        return None
+    config_path = Path(cached_config)
+    if config_path.parent.parent.name != "snapshots":
+        return None
+    return config_path.parent.name
 
 
 def _stage(message: str) -> None:

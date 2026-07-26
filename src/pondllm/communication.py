@@ -4,15 +4,17 @@ import json
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from random import Random
 from typing import Any, Iterable
 
 from .domain import Action, ActionKind, Event, Genes, Observation, Position
 from .policies import Policy
+from .prompting import strict_json_action
 from .world import World, WorldConfig
 
 
 COMMUNICATION_CONDITIONS = ("normal", "blocked", "corrupted", "costly")
-COMMUNICATION_PROFILES = ("matched", "clean")
+COMMUNICATION_PROFILES = ("matched", "clean", "v4")
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +32,8 @@ class CommunicationScene:
     target_amount: int
     sender_energy: int
     recipient_energy: int
+    sender_age: int
+    recipient_age: int
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -45,12 +49,24 @@ def create_communication_world(
     if profile not in COMMUNICATION_PROFILES:
         raise ValueError(f"unknown communication profile: {profile}")
 
-    sender_position, recipient_position, target_food = _scene_positions(seed)
+    if profile == "v4":
+        width = 11
+        height = 11
+        sender_position, recipient_position, target_food = _v4_scene_positions(
+            seed,
+            width=width,
+            height=height,
+            radius=3,
+        )
+    else:
+        width = 7
+        height = 7
+        sender_position, recipient_position, target_food = _scene_positions(seed)
     delivery = "normal" if condition == "costly" else condition
     signal_cost = 1 if condition == "costly" else 0
     config = WorldConfig(
-        width=7,
-        height=7,
+        width=width,
+        height=height,
         founders=2,
         initial_energy=10,
         initial_food=0,
@@ -69,20 +85,39 @@ def create_communication_world(
         signal_cost=signal_cost,
     )
     world = World(config, seed=seed, initialize=False)
-    initial_tick = 2 + seed % 89 if profile == "matched" else 0
+    if profile == "matched":
+        initial_tick = 2 + seed % 89
+    elif profile == "v4":
+        initial_tick = (seed * 17) % 121
+    else:
+        initial_tick = 0
     world.tick = initial_tick
     sender_energy = 9 + seed % 4
-    recipient_energy = 7 + seed % 3
+    recipient_energy = (9 if profile == "v4" else 7) + seed % 3
     if profile == "matched":
         sender_id = f"organism-s{seed}-{seed:05d}"
         recipient_id = f"organism-r{seed}-{seed:05d}"
         sender_lineage = f"lineage-s{seed % 17:02d}"
         recipient_lineage = f"lineage-r{seed % 19:02d}"
-    else:
+    elif profile == "clean":
         sender_id = None
         recipient_id = None
         sender_lineage = "lineage-00001"
         recipient_lineage = "lineage-00002"
+    else:
+        rng = Random(seed + 91_003)
+        organism_ids = [
+            f"organism-{seed:06d}-00001",
+            f"organism-{seed:06d}-00002",
+        ]
+        lineages = [
+            f"lineage-{(seed * 31 + 1) % 10_000_000:07d}",
+            f"lineage-{(seed * 31 + 2) % 10_000_000:07d}",
+        ]
+        rng.shuffle(organism_ids)
+        rng.shuffle(lineages)
+        sender_id, recipient_id = organism_ids
+        sender_lineage, recipient_lineage = lineages
     sender = world.spawn_founder(
         position=sender_position,
         lineage_id=sender_lineage,
@@ -97,11 +132,29 @@ def create_communication_world(
         genes=Genes(),
         organism_id=recipient_id,
     )
+    if profile == "v4":
+        rng = Random(seed + 43_901)
+        sender.age = rng.randint(0, initial_tick)
+        recipient.age = rng.randint(0, initial_tick)
+    else:
+        sender.age = 0
+        recipient.age = 0
     if profile == "matched":
         sender.remember(
             f"last forage was {1 + seed % 8} ticks ago",
             world.config.memory_limit,
         )
+    elif profile == "v4":
+        if seed % 3 == 0:
+            sender.remember(
+                f"{recipient.organism_id} shared 1 energy",
+                world.config.memory_limit,
+            )
+        elif seed % 3 == 1:
+            recipient.remember(
+                f"{sender.organism_id} shared 1 energy",
+                world.config.memory_limit,
+            )
         recipient.remember(
             f"survived tick {initial_tick - 1}",
             world.config.memory_limit,
@@ -122,6 +175,8 @@ def create_communication_world(
         target_amount=target_amount,
         sender_energy=sender_energy,
         recipient_energy=recipient_energy,
+        sender_age=sender.age,
+        recipient_age=recipient.age,
     )
     return world, scene
 
@@ -199,6 +254,14 @@ def _summarize_world(
     condition: str,
 ) -> dict[str, Any]:
     decisions = [event for event in world.events if event.kind == "decision"]
+    forced_sender_decisions = [
+        event
+        for event in decisions
+        if event.actor_id == scene.sender_id and event.tick > scene.initial_tick
+    ]
+    model_decisions = [
+        event for event in decisions if event not in forced_sender_decisions
+    ]
     signals = [
         event
         for event in world.events
@@ -241,6 +304,19 @@ def _summarize_world(
         "scene": scene.to_dict(),
         "decisions": len(decisions),
         "valid_decisions": sum(bool(event.data["valid"]) for event in decisions),
+        "forced_sender_decisions": len(forced_sender_decisions),
+        "model_decisions": len(model_decisions),
+        "valid_model_decisions": sum(
+            bool(event.data["valid"]) and "policy_error" not in event.data
+            for event in model_decisions
+        ),
+        "strict_model_outputs": sum(
+            strict_json_action(event.data.get("raw_output")) is not None
+            for event in model_decisions
+        ),
+        "model_policy_errors": sum(
+            "policy_error" in event.data for event in model_decisions
+        ),
         "sender_actions": dict(sorted(sender_actions.items())),
         "recipient_actions": dict(sorted(recipient_actions.items())),
         "sender_signal_count": len(signals),
@@ -286,11 +362,40 @@ def _message_payload(event: Event) -> dict[str, Any]:
 
 def _aggregate_condition(runs: list[dict[str, Any]]) -> dict[str, Any]:
     decisions = sum(int(run["decisions"]) for run in runs)
+    model_decisions = sum(int(run["model_decisions"]) for run in runs)
     return {
         "runs": len(runs),
         "valid_action_rate": (
             round(sum(int(run["valid_decisions"]) for run in runs) / decisions, 4)
             if decisions
+            else 0.0
+        ),
+        "model_decisions": model_decisions,
+        "model_action_valid_rate": (
+            round(
+                sum(int(run["valid_model_decisions"]) for run in runs)
+                / model_decisions,
+                4,
+            )
+            if model_decisions
+            else 0.0
+        ),
+        "strict_json_rate": (
+            round(
+                sum(int(run["strict_model_outputs"]) for run in runs)
+                / model_decisions,
+                4,
+            )
+            if model_decisions
+            else 0.0
+        ),
+        "model_policy_error_rate": (
+            round(
+                sum(int(run["model_policy_errors"]) for run in runs)
+                / model_decisions,
+                4,
+            )
+            if model_decisions
             else 0.0
         ),
         "sender_signalled_rate": round(
@@ -372,6 +477,81 @@ def _scene_positions(seed: int) -> tuple[Position, Position, Position]:
         ((2, 4), (3, 6), (3, 2)),
     )
     return variants[seed % len(variants)]
+
+
+def _v4_scene_positions(
+    seed: int,
+    *,
+    width: int,
+    height: int,
+    radius: int,
+) -> tuple[Position, Position, Position]:
+    rng = Random(seed + 17_171)
+    for _ in range(10_000):
+        sender = (rng.randrange(width), rng.randrange(height))
+        nearby = [
+            (x, y)
+            for x in range(max(0, sender[0] - radius), min(width, sender[0] + radius + 1))
+            for y in range(max(0, sender[1] - radius), min(height, sender[1] + radius + 1))
+            if (x, y) != sender and _manhattan(sender, (x, y)) <= radius
+        ]
+        targets = [
+            position for position in nearby if _manhattan(sender, position) >= 2
+        ]
+        if not targets:
+            continue
+        target = rng.choice(targets)
+        recipients = [
+            position
+            for position in nearby
+            if position != target
+            and _manhattan(position, target) > radius
+            and _greedy_path_reaches(
+                position,
+                target,
+                blocked=sender,
+                width=width,
+                height=height,
+                steps=radius * 2 + 2,
+            )
+        ]
+        if recipients:
+            return sender, rng.choice(recipients), target
+    raise RuntimeError("could not construct a diverse V4 communication scene")
+
+
+def _greedy_path_reaches(
+    start: Position,
+    target: Position,
+    *,
+    blocked: Position,
+    width: int,
+    height: int,
+    steps: int,
+) -> bool:
+    position = start
+    for _ in range(steps):
+        if position == target:
+            return True
+        neighbors = [
+            candidate
+            for candidate in (
+                (position[0] - 1, position[1]),
+                (position[0] + 1, position[1]),
+                (position[0], position[1] - 1),
+                (position[0], position[1] + 1),
+            )
+            if 0 <= candidate[0] < width
+            and 0 <= candidate[1] < height
+            and candidate != blocked
+        ]
+        best_distance = min(_manhattan(candidate, target) for candidate in neighbors)
+        position = min(
+            candidate
+            for candidate in neighbors
+            if _manhattan(candidate, target) == best_distance
+        )
+    return position == target
 
 
 def _manhattan(left: Position, right: Position) -> int:

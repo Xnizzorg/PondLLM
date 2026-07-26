@@ -70,6 +70,20 @@ def parse_action_text(text: str) -> Action:
     raise InvalidAction("model output did not contain a valid action object")
 
 
+def strict_json_action(text: str | None) -> Action | None:
+    """Return an action only when the complete raw output is one JSON object."""
+
+    if not isinstance(text, str) or not text.strip():
+        return None
+    try:
+        payload = json.loads(text)
+        if not isinstance(payload, dict):
+            return None
+        return Action.from_payload(payload)
+    except (json.JSONDecodeError, InvalidAction, TypeError, ValueError):
+        return None
+
+
 def action_is_observation_legal(
     action: Action, observation: Observation | dict[str, Any]
 ) -> tuple[bool, str]:

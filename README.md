@@ -170,6 +170,36 @@ python -m pondllm run-communication-world `
   --output runs/communication-world-0.8b-clean
 ```
 
+## Simulator-native V4
+
+The sixth experiment trains a fresh 0.8B adapter from role-neutral observations produced by the
+simulator. It adds complete signal-to-forage trajectories and resource-rational sharing
+counterfactuals while removing generic signals and unsafe shares from the inherited V2 corpus.
+
+V4 passes the controlled gates: 100% strict JSON and legal actions, 98% useful signalling, 1%
+redundant signalling, 99.7% survival-counterfactual accuracy, and a +93.75-point normal-versus-
+blocked forage effect across 16 neutral paired worlds. The unadapted base has zero valid model
+actions and zero paired effect on those same seeds.
+
+This is not yet a population policy. In four ordinary worlds, V4 did not signal in 13 strict
+multi-agent information-asymmetry opportunities, and two low-energy offspring died while pursuing
+food they could not reach. Population-scale RL remains deferred; V4.1 should train and gate
+multi-agent/multi-food communication plus reachability-aware offspring assistance.
+
+The corpus construction, audits, exact gates, results, baselines, hashes, caveats, and next
+experiment are recorded in [docs/night-six-v4-results.md](docs/night-six-v4-results.md).
+
+Generate the V4 corpus with:
+
+```powershell
+python -m pondllm dataset-v4 `
+  --base data/generated/sft-v2-balanced.jsonl `
+  --scenes 1000 `
+  --survival-scenes 1000 `
+  --seed 52000 `
+  --output data/generated/sft-v4-simulator-native.jsonl
+```
+
 ## Repository map
 
 ```text
@@ -177,6 +207,7 @@ configs/night_one.toml       Night-one defaults
 src/pondllm/domain.py        Actions, organisms, genes, and observations
 src/pondllm/world.py         Deterministic ecology and event logging
 src/pondllm/communication.py Paired world-level signal interventions and metrics
+src/pondllm/curriculum_v4.py Role-neutral communication and survival curriculum
 src/pondllm/policies.py      Heuristic and random baselines
 src/pondllm/prompting.py     Shared action and communication protocol
 src/pondllm/model_policy.py  Optional local Qwen policy

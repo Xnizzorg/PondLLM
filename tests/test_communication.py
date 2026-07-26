@@ -14,11 +14,17 @@ from pondllm.world import World, WorldConfig
 
 class ScriptedCommunicationPolicy:
     def choose(self, observation: Observation) -> Action:
-        if (
-            observation.lineage_id == "sender-lineage"
-            or observation.lineage_id.startswith("lineage-s")
-        ):
-            target = observation.visible_food[0][:2]
+        useful_food = [
+            food
+            for food in observation.visible_food
+            if any(
+                _manhattan(agent["position"], food[:2])
+                > observation.perception_radius
+                for agent in observation.visible_agents
+            )
+        ]
+        if useful_food:
+            target = useful_food[0][:2]
             return Action(ActionKind.SIGNAL, message=f"food at [{target[0]},{target[1]}]")
 
         if observation.current_food > 0:
@@ -126,6 +132,40 @@ class CommunicationWorldTests(unittest.TestCase):
         self.assertEqual(clean_sender.lineage_id, "lineage-00001")
         self.assertEqual(clean_sender.visible_agents[0]["lineage"], "lineage-00002")
 
+    def test_v4_profile_is_neutral_and_geometrically_diverse(self) -> None:
+        scenes = [
+            create_communication_world(seed, "normal", profile="v4")[1]
+            for seed in range(200, 212)
+        ]
+        layouts = {
+            (
+                scene.sender_position,
+                scene.recipient_position,
+                scene.target_food,
+            )
+            for scene in scenes
+        }
+        self.assertGreater(len(layouts), 8)
+        for seed, scene in zip(range(200, 212), scenes, strict=True):
+            world, recreated = create_communication_world(
+                seed,
+                "normal",
+                profile="v4",
+            )
+            self.assertEqual(scene, recreated)
+            sender = world.observe(world.organisms[scene.sender_id])
+            self.assertNotIn("-s", sender.organism_id)
+            self.assertNotIn("-r", sender.organism_id)
+            self.assertLessEqual(sender.age, sender.tick)
+            self.assertTrue(sender.visible_food)
+            self.assertGreater(
+                _manhattan(
+                    sender.visible_agents[0]["position"],
+                    sender.visible_food[0][:2],
+                ),
+                sender.perception_radius,
+            )
+
     def test_scripted_policy_proves_normal_channel_effect(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             summary = run_communication_experiment(
@@ -148,6 +188,25 @@ class CommunicationWorldTests(unittest.TestCase):
             )
             self.assertGreater(costly["total_signal_energy_spent"], 0)
             self.assertGreater(summary["paired_effects"]["normal_distance_advantage"], 0)
+
+    def test_scripted_policy_proves_diverse_v4_channel_effect(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            summary = run_communication_experiment(
+                policy=ScriptedCommunicationPolicy(),
+                output_dir=Path(temporary),
+                seeds=range(200, 212),
+                steps=11,
+                profile="v4",
+            )
+            normal = summary["per_condition"]["normal"]
+            blocked = summary["per_condition"]["blocked"]
+            self.assertEqual(normal["sender_signalled_rate"], 1.0)
+            self.assertEqual(normal["recipient_foraged_rate"], 1.0)
+            self.assertEqual(blocked["recipient_foraged_rate"], 0.0)
+            self.assertEqual(
+                summary["paired_effects"]["normal_minus_blocked_forage_rate"],
+                1.0,
+            )
 
 
 def _signal_world(delivery: str, cost: int) -> tuple[World, object, object]:
