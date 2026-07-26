@@ -10,6 +10,7 @@ from pondllm.dataset import (
     stratify_sft_dataset,
 )
 from pondllm.curriculum_v4 import generate_v4_sft_dataset
+from pondllm.curriculum_v41 import generate_v41_sft_dataset
 from pondllm.domain import Action, ActionKind
 from pondllm.prompting import training_record
 from pondllm.world import WorldConfig
@@ -217,6 +218,66 @@ class DatasetTests(unittest.TestCase):
                 all(
                     observation["self"]["age"] <= observation["tick"]
                     for observation in observations
+                )
+            )
+
+    def test_v41_dataset_is_rich_reachable_and_deterministic(self) -> None:
+        config = WorldConfig(
+            width=12,
+            height=12,
+            founders=2,
+            initial_food=0,
+            food_regrowth=0,
+            max_food=10,
+            max_population=4,
+            perception_radius=3,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / "v41-first.jsonl"
+            second = Path(directory) / "v41-second.jsonl"
+            first_summary = generate_v41_sft_dataset(
+                first,
+                config,
+                rich_scenes=6,
+                reachability_scenes=6,
+                seed=61,
+            )
+            second_summary = generate_v41_sft_dataset(
+                second,
+                config,
+                rich_scenes=6,
+                reachability_scenes=6,
+                seed=61,
+            )
+            self.assertEqual(first.read_bytes(), second.read_bytes())
+            self.assertEqual(first_summary["sha256"], second_summary["sha256"])
+            self.assertEqual(first_summary["duplicate_records_skipped"], 0)
+            records = [
+                json.loads(line)
+                for line in first.read_text(encoding="utf-8").splitlines()
+            ]
+            rich_useful = [
+                record
+                for record in records
+                if record.get("communication_case") == "rich_sender_useful"
+            ]
+            self.assertEqual(len(rich_useful), 6)
+            for record in rich_useful:
+                observation = json.loads(record["prompt"][1]["content"])
+                self.assertEqual(len(observation["visible_agents"]), 3)
+                self.assertEqual(len(observation["visible_food"]), 2)
+            unreachable = [
+                record
+                for record in records
+                if record.get("survival_case") == "food_unreachable"
+            ]
+            self.assertEqual(len(unreachable), 6)
+            self.assertTrue(
+                all(
+                    json.loads(record["completion"][0]["content"])["action"]
+                    == "rest"
+                    and record["reachable_before_exhaustion"] is False
+                    for record in unreachable
                 )
             )
 

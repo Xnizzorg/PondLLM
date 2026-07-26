@@ -185,13 +185,13 @@ def evaluate_communication_policy(
             legal += int(is_legal)
             exact = prediction.to_dict() == expected.to_dict()
             case_exact[case] += int(exact)
-            if case == "sender_useful":
+            if case in {"sender_useful", "rich_sender_useful"}:
                 useful_signals += int(prediction.kind is ActionKind.SIGNAL)
                 payload_correct += int(
                     prediction.kind is ActionKind.SIGNAL
                     and _food_coordinate(prediction.message) == target_food
                 )
-            elif case == "sender_redundant":
+            elif case in {"sender_redundant", "rich_sender_redundant"}:
                 redundant_signals += int(prediction.kind is ActionKind.SIGNAL)
         except (InvalidAction, ValueError, RuntimeError) as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -224,8 +224,12 @@ def evaluate_communication_policy(
 
     elapsed = time.perf_counter() - started
     count = len(records)
-    useful_count = case_totals["sender_useful"]
-    redundant_count = case_totals["sender_redundant"]
+    useful_count = (
+        case_totals["sender_useful"] + case_totals["rich_sender_useful"]
+    )
+    redundant_count = (
+        case_totals["sender_redundant"] + case_totals["rich_sender_redundant"]
+    )
     complete_pairs = [results for results in pair_results.values() if len(results) == 2]
     return {
         "dataset": str(Path(dataset_path).resolve()),
@@ -243,9 +247,17 @@ def evaluate_communication_policy(
             }
             for case_name, total in sorted(case_totals.items())
         },
-        "useful_signal_rate": round(useful_signals / useful_count, 4),
-        "redundant_signal_rate": round(redundant_signals / redundant_count, 4),
-        "payload_coordinate_accuracy": round(payload_correct / useful_count, 4),
+        "useful_signal_rate": (
+            round(useful_signals / useful_count, 4) if useful_count else 0.0
+        ),
+        "redundant_signal_rate": (
+            round(redundant_signals / redundant_count, 4)
+            if redundant_count
+            else 0.0
+        ),
+        "payload_coordinate_accuracy": (
+            round(payload_correct / useful_count, 4) if useful_count else 0.0
+        ),
         "paired_exact_accuracy": (
             round(sum(all(results) for results in complete_pairs) / len(complete_pairs), 4)
             if complete_pairs

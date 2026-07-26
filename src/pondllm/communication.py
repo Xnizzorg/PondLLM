@@ -14,7 +14,7 @@ from .world import World, WorldConfig
 
 
 COMMUNICATION_CONDITIONS = ("normal", "blocked", "corrupted", "costly")
-COMMUNICATION_PROFILES = ("matched", "clean", "v4")
+COMMUNICATION_PROFILES = ("matched", "clean", "v4", "v41")
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +34,9 @@ class CommunicationScene:
     recipient_energy: int
     sender_age: int
     recipient_age: int
+    distractor_ids: tuple[str, ...]
+    distractor_positions: tuple[Position, ...]
+    extra_food: tuple[tuple[int, int, int], ...]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -49,7 +52,25 @@ def create_communication_world(
     if profile not in COMMUNICATION_PROFILES:
         raise ValueError(f"unknown communication profile: {profile}")
 
-    if profile == "v4":
+    distractor_positions: tuple[Position, ...] = ()
+    extra_food: tuple[tuple[int, int, int], ...] = ()
+    if profile == "v41":
+        width = 11
+        height = 11
+        (
+            sender_position,
+            recipient_position,
+            target_food,
+            extra_food_position,
+            distractor_positions,
+        ) = _v41_scene_positions(
+            seed,
+            width=width,
+            height=height,
+            radius=3,
+        )
+        extra_food = ((extra_food_position[0], extra_food_position[1], 1),)
+    elif profile == "v4":
         width = 11
         height = 11
         sender_position, recipient_position, target_food = _v4_scene_positions(
@@ -67,7 +88,7 @@ def create_communication_world(
     config = WorldConfig(
         width=width,
         height=height,
-        founders=2,
+        founders=4 if profile == "v41" else 2,
         initial_energy=10,
         initial_food=0,
         food_energy=4,
@@ -78,7 +99,7 @@ def create_communication_world(
         rest_gain=1,
         reproduction_cost=8,
         child_energy=4,
-        max_population=4,
+        max_population=6 if profile == "v41" else 4,
         memory_limit=12,
         perception_radius=3,
         signal_delivery=delivery,
@@ -87,13 +108,13 @@ def create_communication_world(
     world = World(config, seed=seed, initialize=False)
     if profile == "matched":
         initial_tick = 2 + seed % 89
-    elif profile == "v4":
+    elif profile in {"v4", "v41"}:
         initial_tick = (seed * 17) % 121
     else:
         initial_tick = 0
     world.tick = initial_tick
     sender_energy = 9 + seed % 4
-    recipient_energy = (9 if profile == "v4" else 7) + seed % 3
+    recipient_energy = (9 if profile in {"v4", "v41"} else 7) + seed % 3
     if profile == "matched":
         sender_id = f"organism-s{seed}-{seed:05d}"
         recipient_id = f"organism-r{seed}-{seed:05d}"
@@ -104,7 +125,7 @@ def create_communication_world(
         recipient_id = None
         sender_lineage = "lineage-00001"
         recipient_lineage = "lineage-00002"
-    else:
+    elif profile == "v4":
         rng = Random(seed + 91_003)
         organism_ids = [
             f"organism-{seed:06d}-00001",
@@ -118,6 +139,19 @@ def create_communication_world(
         rng.shuffle(lineages)
         sender_id, recipient_id = organism_ids
         sender_lineage, recipient_lineage = lineages
+    else:
+        rng = Random(seed + 91_003)
+        organism_ids = [
+            f"organism-{seed:06d}-{index:05d}" for index in range(1, 5)
+        ]
+        lineages = [
+            f"lineage-{(seed * 31 + index) % 10_000_000:07d}"
+            for index in range(1, 5)
+        ]
+        rng.shuffle(organism_ids)
+        rng.shuffle(lineages)
+        sender_id, recipient_id = organism_ids[:2]
+        sender_lineage, recipient_lineage = lineages[:2]
     sender = world.spawn_founder(
         position=sender_position,
         lineage_id=sender_lineage,
@@ -132,10 +166,23 @@ def create_communication_world(
         genes=Genes(),
         organism_id=recipient_id,
     )
-    if profile == "v4":
+    distractor_ids: list[str] = []
+    if profile == "v41":
+        for index, position in enumerate(distractor_positions, start=2):
+            distractor = world.spawn_founder(
+                position=position,
+                lineage_id=lineages[index],
+                energy=8 + (seed + index) % 5,
+                genes=Genes(),
+                organism_id=organism_ids[index],
+            )
+            distractor_ids.append(distractor.organism_id)
+    if profile in {"v4", "v41"}:
         rng = Random(seed + 43_901)
         sender.age = rng.randint(0, initial_tick)
         recipient.age = rng.randint(0, initial_tick)
+        for distractor_id in distractor_ids:
+            world.organisms[distractor_id].age = rng.randint(0, initial_tick)
     else:
         sender.age = 0
         recipient.age = 0
@@ -144,7 +191,7 @@ def create_communication_world(
             f"last forage was {1 + seed % 8} ticks ago",
             world.config.memory_limit,
         )
-    elif profile == "v4":
+    elif profile in {"v4", "v41"}:
         if seed % 3 == 0:
             sender.remember(
                 f"{recipient.organism_id} shared 1 energy",
@@ -161,6 +208,8 @@ def create_communication_world(
         )
     target_amount = 3
     world.add_food(target_food, target_amount)
+    for x, y, amount in extra_food:
+        world.add_food((x, y), amount)
     scene = CommunicationScene(
         seed=seed,
         profile=profile,
@@ -177,6 +226,9 @@ def create_communication_world(
         recipient_energy=recipient_energy,
         sender_age=sender.age,
         recipient_age=recipient.age,
+        distractor_ids=tuple(distractor_ids),
+        distractor_positions=distractor_positions,
+        extra_food=extra_food,
     )
     return world, scene
 
@@ -217,6 +269,7 @@ def run_communication_experiment(
                     delegate=policy,
                     sender_id=scene.sender_id,
                     sender_action_tick=scene.initial_tick,
+                    forced_rest_ids=scene.distractor_ids,
                 ),
                 steps,
             )
@@ -257,7 +310,13 @@ def _summarize_world(
     forced_sender_decisions = [
         event
         for event in decisions
-        if event.actor_id == scene.sender_id and event.tick > scene.initial_tick
+        if (
+            event.actor_id in scene.distractor_ids
+            or (
+                event.actor_id == scene.sender_id
+                and event.tick > scene.initial_tick
+            )
+        )
     ]
     model_decisions = [
         event for event in decisions if event not in forced_sender_decisions
@@ -520,6 +579,136 @@ def _v4_scene_positions(
     raise RuntimeError("could not construct a diverse V4 communication scene")
 
 
+def _v41_scene_positions(
+    seed: int,
+    *,
+    width: int,
+    height: int,
+    radius: int,
+) -> tuple[Position, Position, Position, Position, tuple[Position, Position]]:
+    rng = Random(seed + 29_471)
+    cells = [(x, y) for x in range(width) for y in range(height)]
+    for _ in range(20_000):
+        sender = rng.choice(cells)
+        nearby = [
+            cell
+            for cell in cells
+            if cell != sender and _manhattan(sender, cell) <= radius
+        ]
+        recipient = rng.choice(nearby)
+        targets = [
+            cell
+            for cell in nearby
+            if cell != recipient
+            and _manhattan(sender, cell) >= 2
+            and _manhattan(recipient, cell) > radius
+        ]
+        if not targets:
+            continue
+        target = rng.choice(targets)
+        extras = [
+            cell
+            for cell in nearby
+            if cell not in {recipient, target}
+            and _manhattan(recipient, cell) > radius
+            and _manhattan(sender, cell) > _manhattan(sender, target)
+        ]
+        if not extras:
+            continue
+        extra = rng.choice(extras)
+        direct_path = _direct_greedy_path(recipient, target, width, height)
+        distractor_candidates = [
+            cell
+            for cell in nearby
+            if cell not in {recipient, target, extra}
+            and cell not in direct_path
+            and (
+                _manhattan(cell, target) <= radius
+                or _manhattan(cell, extra) <= radius
+            )
+        ]
+        if len(distractor_candidates) < 2:
+            continue
+        rng.shuffle(distractor_candidates)
+        distractors = (
+            distractor_candidates[0],
+            distractor_candidates[1],
+        )
+        if _greedy_path_reaches_many(
+            recipient,
+            target,
+            blocked={sender, *distractors},
+            width=width,
+            height=height,
+            steps=radius * 2 + 3,
+        ):
+            return sender, recipient, target, extra, distractors
+    raise RuntimeError("could not construct a rich V4.1 communication scene")
+
+
+def _direct_greedy_path(
+    start: Position,
+    target: Position,
+    width: int,
+    height: int,
+) -> set[Position]:
+    position = start
+    path: set[Position] = set()
+    for _ in range(width + height):
+        if position == target:
+            break
+        candidates = [
+            candidate
+            for candidate in (
+                (position[0] - 1, position[1]),
+                (position[0] + 1, position[1]),
+                (position[0], position[1] - 1),
+                (position[0], position[1] + 1),
+            )
+            if 0 <= candidate[0] < width and 0 <= candidate[1] < height
+        ]
+        position = min(
+            candidates,
+            key=lambda candidate: (_manhattan(candidate, target), candidate),
+        )
+        path.add(position)
+    return path
+
+
+def _greedy_path_reaches_many(
+    start: Position,
+    target: Position,
+    *,
+    blocked: set[Position],
+    width: int,
+    height: int,
+    steps: int,
+) -> bool:
+    position = start
+    for _ in range(steps):
+        if position == target:
+            return True
+        candidates = [
+            candidate
+            for candidate in (
+                (position[0] - 1, position[1]),
+                (position[0] + 1, position[1]),
+                (position[0], position[1] - 1),
+                (position[0], position[1] + 1),
+            )
+            if 0 <= candidate[0] < width
+            and 0 <= candidate[1] < height
+            and candidate not in blocked
+        ]
+        if not candidates:
+            return False
+        position = min(
+            candidates,
+            key=lambda candidate: (_manhattan(candidate, target), candidate),
+        )
+    return position == target
+
+
 def _greedy_path_reaches(
     start: Position,
     target: Position,
@@ -564,14 +753,16 @@ class _PairedCommunicationPolicy:
         delegate: Policy,
         sender_id: str,
         sender_action_tick: int,
+        forced_rest_ids: tuple[str, ...] = (),
     ) -> None:
         self.delegate = delegate
         self.sender_id = sender_id
         self.sender_action_tick = sender_action_tick
+        self.forced_rest_ids = set(forced_rest_ids)
         self.last_raw_output: str | None = None
 
     def choose(self, observation: Observation) -> Action:
-        if (
+        if observation.organism_id in self.forced_rest_ids or (
             observation.organism_id == self.sender_id
             and observation.tick > self.sender_action_tick
         ):

@@ -10,6 +10,7 @@ from typing import Any
 
 from .config import load_config
 from .curriculum_v4 import generate_v4_sft_dataset
+from .curriculum_v41 import audit_v41_datasets, generate_v41_sft_dataset
 from .dataset import (
     generate_balanced_sft_dataset,
     generate_communication_sft_dataset,
@@ -80,6 +81,28 @@ def build_parser() -> argparse.ArgumentParser:
     v4.add_argument("--no-trajectories", action="store_true")
     v4.add_argument("--output", default="data/generated/sft-v4-simulator-native.jsonl")
 
+    v41 = subparsers.add_parser(
+        "dataset-v41",
+        help="extend V4 with rich communication and reachability SFT records",
+    )
+    v41.add_argument("--base")
+    v41.add_argument("--rich-scenes", type=int, default=1000)
+    v41.add_argument("--reachability-scenes", type=int, default=1000)
+    v41.add_argument("--seed", type=int, default=61000)
+    v41.add_argument("--no-trajectories", action="store_true")
+    v41.add_argument(
+        "--output",
+        default="data/generated/sft-v4.1-rich-reachability.jsonl",
+    )
+
+    audit_v41 = subparsers.add_parser(
+        "audit-v41",
+        help="audit V4.1 legality, identity neutrality, and held-out overlap",
+    )
+    audit_v41.add_argument("--training", required=True)
+    audit_v41.add_argument("--held-out", nargs="+", required=True)
+    audit_v41.add_argument("--output")
+
     train = subparsers.add_parser("train", help="QLoRA fine-tune the action-policy adapter")
     train.add_argument("--dataset", default="data/generated/sft.jsonl")
     train.add_argument("--output", default="artifacts/qwen3-0.6b-action-sft")
@@ -111,7 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     communication_world.add_argument("--seed-start", type=int, default=100)
     communication_world.add_argument(
         "--profile",
-        choices=("matched", "clean", "v4"),
+        choices=("matched", "clean", "v4", "v41"),
         default="matched",
     )
     communication_world.add_argument("--temperature", type=float, default=0.0)
@@ -229,6 +252,29 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(summary, indent=2))
         return 0
+
+    if args.command == "dataset-v41":
+        summary = generate_v41_sft_dataset(
+            output_path=args.output,
+            base_dataset_path=args.base,
+            world_config=config.world,
+            rich_scenes=args.rich_scenes,
+            reachability_scenes=args.reachability_scenes,
+            seed=args.seed,
+            include_trajectories=not args.no_trajectories,
+        )
+        print(json.dumps(summary, indent=2))
+        return 0
+
+    if args.command == "audit-v41":
+        summary = audit_v41_datasets(args.training, args.held_out)
+        if args.output:
+            destination = Path(args.output)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with destination.open("w", encoding="utf-8") as handle:
+                json.dump(summary, handle, indent=2)
+        print(json.dumps(summary, indent=2))
+        return 0 if summary["all_checks_pass"] else 1
 
     if args.command == "train":
         from .training import train_qlora_sft

@@ -14,6 +14,21 @@ from pondllm.world import World, WorldConfig
 
 class ScriptedCommunicationPolicy:
     def choose(self, observation: Observation) -> Action:
+        if observation.current_food > 0:
+            return Action(ActionKind.FORAGE)
+        coordinate = self._remembered_food(observation)
+        if coordinate is not None:
+            best_distance = min(
+                _manhattan(position, coordinate)
+                for position in observation.open_neighbors
+            )
+            target = min(
+                position
+                for position in observation.open_neighbors
+                if _manhattan(position, coordinate) == best_distance
+            )
+            return Action(ActionKind.MOVE, target_position=target)
+
         useful_food = [
             food
             for food in observation.visible_food
@@ -27,20 +42,7 @@ class ScriptedCommunicationPolicy:
             target = useful_food[0][:2]
             return Action(ActionKind.SIGNAL, message=f"food at [{target[0]},{target[1]}]")
 
-        if observation.current_food > 0:
-            return Action(ActionKind.FORAGE)
-        coordinate = self._remembered_food(observation)
-        if coordinate is None:
-            return Action(ActionKind.REST)
-        best_distance = min(
-            _manhattan(position, coordinate) for position in observation.open_neighbors
-        )
-        target = min(
-            position
-            for position in observation.open_neighbors
-            if _manhattan(position, coordinate) == best_distance
-        )
-        return Action(ActionKind.MOVE, target_position=target)
+        return Action(ActionKind.REST)
 
     @staticmethod
     def _remembered_food(observation: Observation) -> tuple[int, int] | None:
@@ -197,6 +199,37 @@ class CommunicationWorldTests(unittest.TestCase):
                 seeds=range(200, 212),
                 steps=11,
                 profile="v4",
+            )
+            normal = summary["per_condition"]["normal"]
+            blocked = summary["per_condition"]["blocked"]
+            self.assertEqual(normal["sender_signalled_rate"], 1.0)
+            self.assertEqual(normal["recipient_foraged_rate"], 1.0)
+            self.assertEqual(blocked["recipient_foraged_rate"], 0.0)
+            self.assertEqual(
+                summary["paired_effects"]["normal_minus_blocked_forage_rate"],
+                1.0,
+            )
+
+    def test_v41_profile_adds_rich_context_and_preserves_channel_effect(self) -> None:
+        world, scene = create_communication_world(
+            400,
+            "normal",
+            profile="v41",
+        )
+        sender = world.observe(world.organisms[scene.sender_id])
+        recipient = world.observe(world.organisms[scene.recipient_id])
+        self.assertEqual(len(sender.visible_agents), 3)
+        self.assertEqual(len(sender.visible_food), 2)
+        self.assertEqual(recipient.visible_food, ())
+        self.assertEqual(len(scene.distractor_ids), 2)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            summary = run_communication_experiment(
+                policy=ScriptedCommunicationPolicy(),
+                output_dir=Path(temporary),
+                seeds=range(400, 408),
+                steps=11,
+                profile="v41",
             )
             normal = summary["per_condition"]["normal"]
             blocked = summary["per_condition"]["blocked"]
