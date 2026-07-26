@@ -11,6 +11,7 @@ from pondllm.dataset import (
 )
 from pondllm.curriculum_v4 import generate_v4_sft_dataset
 from pondllm.curriculum_v41 import generate_v41_sft_dataset
+from pondllm.curriculum_v42 import audit_v42_datasets, generate_v42_sft_dataset
 from pondllm.domain import Action, ActionKind
 from pondllm.prompting import training_record
 from pondllm.world import WorldConfig
@@ -280,6 +281,82 @@ class DatasetTests(unittest.TestCase):
                     for record in unreachable
                 )
             )
+
+    def test_v42_dataset_hardens_negatives_and_energy_trajectories(self) -> None:
+        config = WorldConfig(
+            width=12,
+            height=12,
+            founders=2,
+            initial_food=0,
+            food_regrowth=0,
+            max_food=10,
+            max_population=4,
+            perception_radius=3,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / "v42-first.jsonl"
+            second = Path(directory) / "v42-second.jsonl"
+            held_out = Path(directory) / "v42-held-out.jsonl"
+            first_summary = generate_v42_sft_dataset(
+                first,
+                config,
+                paired_scenes=2,
+                redundant_scenes=4,
+                trajectory_scenes=2,
+                seed=81,
+            )
+            second_summary = generate_v42_sft_dataset(
+                second,
+                config,
+                paired_scenes=2,
+                redundant_scenes=4,
+                trajectory_scenes=2,
+                seed=81,
+            )
+            generate_v42_sft_dataset(
+                held_out,
+                config,
+                paired_scenes=2,
+                redundant_scenes=2,
+                trajectory_scenes=2,
+                seed=91,
+            )
+            self.assertEqual(first.read_bytes(), second.read_bytes())
+            self.assertEqual(first_summary["sha256"], second_summary["sha256"])
+            self.assertEqual(first_summary["records"], 38)
+            self.assertEqual(
+                first_summary["communication_case_counts"],
+                {"rich_sender_redundant": 6, "rich_sender_useful": 2},
+            )
+            self.assertEqual(
+                set(first_summary["energy_case_counts"].values()),
+                {2},
+            )
+            records = [
+                json.loads(line)
+                for line in first.read_text(encoding="utf-8").splitlines()
+            ]
+            boundary = [
+                record
+                for record in records
+                if record.get("energy_case") in {
+                    "boundary_one_wait",
+                    "boundary_two_wait",
+                }
+            ]
+            self.assertTrue(boundary)
+            for record in boundary:
+                observation = json.loads(record["prompt"][1]["content"])
+                self.assertEqual(
+                    observation["self"]["energy"],
+                    record["target_distance"],
+                )
+                self.assertEqual(
+                    json.loads(record["completion"][0]["content"])["action"],
+                    "rest",
+                )
+            audit = audit_v42_datasets(first, [held_out])
+            self.assertTrue(audit["all_checks_pass"])
 
 
 if __name__ == "__main__":

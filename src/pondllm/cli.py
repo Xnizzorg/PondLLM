@@ -11,6 +11,7 @@ from typing import Any
 from .config import load_config
 from .curriculum_v4 import generate_v4_sft_dataset
 from .curriculum_v41 import audit_v41_datasets, generate_v41_sft_dataset
+from .curriculum_v42 import audit_v42_datasets, generate_v42_sft_dataset
 from .dataset import (
     generate_balanced_sft_dataset,
     generate_communication_sft_dataset,
@@ -103,6 +104,29 @@ def build_parser() -> argparse.ArgumentParser:
     audit_v41.add_argument("--held-out", nargs="+", required=True)
     audit_v41.add_argument("--output")
 
+    v42 = subparsers.add_parser(
+        "dataset-v42",
+        help="extend V4.1 with hard communication negatives and energy trajectories",
+    )
+    v42.add_argument("--base")
+    v42.add_argument("--mined-predictions")
+    v42.add_argument("--paired-scenes", type=int, default=1000)
+    v42.add_argument("--redundant-scenes", type=int, default=3000)
+    v42.add_argument("--trajectory-scenes", type=int, default=1000)
+    v42.add_argument("--seed", type=int, default=81000)
+    v42.add_argument(
+        "--output",
+        default="data/generated/sft-v4.2-hard-negative-trajectories.jsonl",
+    )
+
+    audit_v42 = subparsers.add_parser(
+        "audit-v42",
+        help="audit V4.2 legality, energy budgets, and held-out overlap",
+    )
+    audit_v42.add_argument("--training", required=True)
+    audit_v42.add_argument("--held-out", nargs="+", required=True)
+    audit_v42.add_argument("--output")
+
     train = subparsers.add_parser("train", help="QLoRA fine-tune the action-policy adapter")
     train.add_argument("--dataset", default="data/generated/sft.jsonl")
     train.add_argument("--output", default="artifacts/qwen3-0.6b-action-sft")
@@ -145,6 +169,24 @@ def build_parser() -> argparse.ArgumentParser:
     communication_world.add_argument("--temperature", type=float, default=0.0)
     communication_world.add_argument("--load-in-4bit", action="store_true")
     communication_world.add_argument("--output", default="runs/communication-world")
+
+    rescue_world = subparsers.add_parser(
+        "run-rescue-world",
+        help="run safe, blocked-share, and unsafe-donor rescue worlds",
+    )
+    rescue_world.add_argument("--adapter")
+    rescue_world.add_argument("--model")
+    rescue_world.add_argument("--steps", type=int, default=5)
+    rescue_world.add_argument("--scenes", type=int, default=16)
+    rescue_world.add_argument("--seed-start", type=int, default=900)
+    rescue_world.add_argument(
+        "--policy",
+        choices=("model", "heuristic"),
+        default="model",
+    )
+    rescue_world.add_argument("--temperature", type=float, default=0.0)
+    rescue_world.add_argument("--load-in-4bit", action="store_true")
+    rescue_world.add_argument("--output", default="runs/rescue-world")
 
     evaluate = subparsers.add_parser("evaluate", help="measure model action validity on held-out states")
     evaluate.add_argument("--dataset", default="data/generated/eval.jsonl")
@@ -281,6 +323,30 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(summary, indent=2))
         return 0 if summary["all_checks_pass"] else 1
 
+    if args.command == "dataset-v42":
+        summary = generate_v42_sft_dataset(
+            output_path=args.output,
+            base_dataset_path=args.base,
+            mined_predictions_path=args.mined_predictions,
+            world_config=config.world,
+            paired_scenes=args.paired_scenes,
+            redundant_scenes=args.redundant_scenes,
+            trajectory_scenes=args.trajectory_scenes,
+            seed=args.seed,
+        )
+        print(json.dumps(summary, indent=2))
+        return 0
+
+    if args.command == "audit-v42":
+        summary = audit_v42_datasets(args.training, args.held_out)
+        if args.output:
+            destination = Path(args.output)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with destination.open("w", encoding="utf-8") as handle:
+                json.dump(summary, handle, indent=2)
+        print(json.dumps(summary, indent=2))
+        return 0 if summary["all_checks_pass"] else 1
+
     if args.command == "train":
         from .training import train_qlora_sft
 
@@ -354,6 +420,51 @@ def main(argv: list[str] | None = None) -> int:
             seeds=range(args.seed_start, args.seed_start + args.scenes),
             steps=args.steps,
             profile=args.profile,
+            metadata={
+                "policy": args.policy,
+                "model": model_name if args.policy == "model" else None,
+                "adapter": (
+                    str(Path(args.adapter).resolve())
+                    if args.adapter and args.policy == "model"
+                    else None
+                ),
+                "temperature": args.temperature,
+            },
+        )
+        console_summary = {
+            key: value for key, value in summary.items() if key != "runs"
+        }
+        console_summary["summary_path"] = str(
+            (Path(args.output) / "summary.json").resolve()
+        )
+        print(json.dumps(console_summary, indent=2))
+        return 0
+
+    if args.command == "run-rescue-world":
+        from .assistance import run_rescue_experiment
+
+        model_name = args.model or config.training.model
+        policy = None
+        policy_factory = None
+        if args.policy == "model":
+            from .model_policy import QwenPolicy
+
+            policy = QwenPolicy(
+                model_name=model_name,
+                adapter_path=args.adapter,
+                temperature=args.temperature,
+                load_in_4bit=args.load_in_4bit,
+            )
+        else:
+            policy_factory = (
+                lambda scene_seed, _condition: HeuristicPolicy(scene_seed + 100)
+            )
+        summary = run_rescue_experiment(
+            policy=policy,
+            policy_factory=policy_factory,
+            output_dir=args.output,
+            seeds=range(args.seed_start, args.seed_start + args.scenes),
+            steps=args.steps,
             metadata={
                 "policy": args.policy,
                 "model": model_name if args.policy == "model" else None,

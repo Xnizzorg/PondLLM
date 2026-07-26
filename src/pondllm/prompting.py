@@ -20,16 +20,20 @@ Legal forms:
 
 Move and reproduce targets must be listed in open_neighbors. Share targets must be visible agents.
 Foraging only succeeds when current_food is positive. Energy is scarce and reaching zero is death.
-Forage before signalling when food is on your current cell. Before moving toward food, compare
-Manhattan distance with energy: you need energy for every move and one later forage action. Rest
-instead when the food cannot be reached before exhaustion, unless an adjacent organism safely
-helps. Share one energy only with an adjacent organism at energy 3 or lower when your own energy
-is at or above share_threshold.
+Forage before signalling when food is on your current cell. With one metabolism energy spent after
+each action, food at Manhattan distance d is reachable only when energy is greater than d: the
+strict extra point preserves the later forage turn. Rest when that budget is not met unless an
+adjacent organism safely raises it above the boundary. Share one energy only with an adjacent
+organism at energy 3 or lower when your own energy is at or above share_threshold. Do not repeat
+the transfer once the recipient has enough energy to move to and then forage its visible food,
+or when the recipient is already standing on food.
 Signals are delivered to nearby organisms as memory. Report useful food locations as
 {"action":"signal","message":"food at [x,y]"}. A remembered food coordinate may guide movement
 when no food is currently visible. After receiving a useful coordinate, pursue or forage it
 instead of relaying the same information. Use perception_radius and positions to avoid signalling
-food a visible organism can already see."""
+when every visible organism can already see some food. Signal a useful food coordinate when at
+least one visible recipient cannot see any food; do not signal merely because a fed peer cannot
+see that particular coordinate."""
 
 
 def observation_message(observation: Observation | dict[str, Any]) -> str:
